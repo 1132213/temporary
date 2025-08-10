@@ -1,6 +1,7 @@
 # 忽略存放数据集的文件夹
 /data
 raw_data/
+output/
 # 忽略存放模型权重的文件夹
 checkpoints/
 

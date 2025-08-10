@@ -3,12 +3,15 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import argparse # 1. 导入 argparse 库
+import argparse
 
 from clgm.models.vq_vae import VQVAE
 from clgm.utils.revin import RevIN
 from clgm.utils.evaluation import calculate_ts_metrics
 from configs.config import PATCH_SIZE, VQ_VAE_TRAIN_CONFIG
+
+# --- 新增: 定义输出目录 ---
+OUTPUT_DIR = "output"
 
 def generate_synthetic_timeseries(length=1024, save_path="synthetic_sample.npy"):
     """
@@ -21,6 +24,9 @@ def generate_synthetic_timeseries(length=1024, save_path="synthetic_sample.npy")
     linear_trend = np.linspace(0, 5, length)
     noise = np.random.randn(length) * 0.4
     synthetic_ts = sine_wave + linear_trend + noise
+    
+    # --- 修改: 确保保存路径的目录存在 ---
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     np.save(save_path, synthetic_ts)
     print(f"合成样本已保存至: {save_path}")
     return synthetic_ts
@@ -80,7 +86,6 @@ def evaluate_reconstruction(model_path, ts_data, patch_size, device):
     print("\n--- 定性评估结果 ---")
     plt.figure(figsize=(15, 6))
     plt.title("VQ-VAE Reconstruction effect comparison (using automatically generated samples)")
-    # 调整透明度和线宽
     plt.plot(original_ts, label='Original Time Series', color='blue', alpha=0.8, linewidth=1.5)
     plt.plot(reconstructed_ts, label='Reconstructed Time Series', color='red', linestyle='--', alpha=0.7, linewidth=1.0)
     plt.xlabel("Time Step")
@@ -88,34 +93,35 @@ def evaluate_reconstruction(model_path, ts_data, patch_size, device):
     plt.legend()
     plt.grid(True)
     
-    output_fig_path = "reconstruction_comparison.png"
+    # --- 修改: 将图片保存到指定的输出目录 ---
+    output_fig_path = os.path.join(OUTPUT_DIR, "reconstruction_comparison.png")
     plt.savefig(output_fig_path)
     print(f"对比图像已保存至: {output_fig_path}")
     # plt.show()
 
 if __name__ == "__main__":
-    # --- 3. 设置命令行参数解析 ---
     parser = argparse.ArgumentParser(description="评估 VQ-VAE 模型的重构性能")
     parser.add_argument("--gpu", type=int, default=0, help="要使用的 GPU 索引 (例如, 0, 1, 2, ...)")
     args = parser.parse_args()
 
-    # --- 4. 根据参数和系统环境确定运行设备 ---
     if torch.cuda.is_available():
         device = f"cuda:{args.gpu}"
     else:
         device = "cpu"
     print(f"--- 将要使用的设备是: {device} ---")
 
-    # --- 模型路径配置 ---
+    # --- 新增: 确保输出目录存在 ---
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     MODEL_CHECKPOINT_PATH = os.path.join(VQ_VAE_TRAIN_CONFIG["checkpoint_dir"], 'best_model.pth')
     
-    # 1. 自动生成一个时间序列样本
-    synthetic_ts_data = generate_synthetic_timeseries()
+    # --- 修改: 指定 .npy 文件的保存路径 ---
+    synthetic_npy_path = os.path.join(OUTPUT_DIR, "synthetic_sample.npy")
+    synthetic_ts_data = generate_synthetic_timeseries(save_path=synthetic_npy_path)
     
-    # 2. 运行评估程序
     evaluate_reconstruction(
         model_path=MODEL_CHECKPOINT_PATH,
         ts_data=synthetic_ts_data,
         patch_size=PATCH_SIZE,
-        device=device # 5. 将确定的设备传递给函数
+        device=device
     )
