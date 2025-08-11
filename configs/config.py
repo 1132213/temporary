@@ -1,9 +1,12 @@
 # configs/config.py
 import torch
-
+import os
 # --- LLM 基础模型配置 ---
 # 用户指定的LLM基础模型。推荐使用计算高效且能力强大的模型。
-LLM_MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# 然后将本地模型的相对路径与项目根目录拼接起来
+LOCAL_MODEL_FOLDER = "local_models/Llama-3.2-1B-Instruct"
+LLM_MODEL_NAME = os.path.join(PROJECT_ROOT, LOCAL_MODEL_FOLDER)
 # LLM处理的最大序列长度
 MAX_SEQ_LENGTH = 4096
 
@@ -52,15 +55,20 @@ VQ_VAE_TRAIN_CONFIG = {
 
 # 阶段二 & 三: LLM 微调配置
 LLM_FINETUNE_CONFIG = {
-    "paired_data_path": "./data/paired_ts_text/alignment_data.jsonl",      # 阶段二（对齐）数据路径
+    # "paired_data_path": "./data/paired_ts_text/alignment_data.jsonl",      # 阶段二（对齐）数据路径
+    "paired_data_path": "./data/qwen_generated_dataset_en/alignment_data_en.jsonl", 
+    # "paired_data_path": "./data/qwen_generated_dataset_en/alignment_data_small.jsonl", 
     "instruction_data_path": "./data/paired_ts_text/instruction_data.jsonl",# 阶段三（指令）数据路径
     "vq_vae_checkpoint_path": "./checkpoints/vq_vae/best_model.pth",      # 预训练好的VQ-VAE权重路径
     "clgm_checkpoint_dir": "./checkpoints/clgm/",                         # CLGM模型权重保存目录
+    # "clgm_checkpoint_dir": "./checkpoints/clgm2/",                         # CLGM模型权重保存目录
     "learning_rate": 2e-5,                                                # LLM微调的学习率，通常较小
-    "batch_size": 8,                                                      # LLM微调通常需要更小的批量以适应显存
-    "num_epochs_alignment": 3,                                            # 阶段二训练轮数
+    "batch_size": 4,                                                      # LLM微调通常需要更小的批量以适应显存
+    # "num_epochs_alignment": 3,                                            # 阶段二训练轮数
+    "num_epochs_alignment": 5,                                            # 阶段二训练轮数
     "num_epochs_instruction": 3,                                          # 阶段三训练轮数
     "gradient_accumulation_steps": 4,                                     # 梯度累积步数，用于模拟更大的批量
+    # "gradient_accumulation_steps": 1,                                     # 梯度累积步数，用于模拟更大的批量
     "log_steps": 20,                                                      # 日志打印频率
 }
 

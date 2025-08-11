@@ -4,7 +4,8 @@
 
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, AdamW, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
+from torch.optim import AdamW # Import AdamW from torch.optim
 from accelerate import Accelerator
 import os
 from tqdm import tqdm

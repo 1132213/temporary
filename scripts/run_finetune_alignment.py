@@ -1,9 +1,11 @@
 # scripts/run_finetune_alignment.py
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, AdamW, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
+from torch.optim import AdamW # Import AdamW from torch.optim
 from accelerate import Accelerator # 导入Hugging Face的分布式训练神器
 import os
+import argparse  # 导入 argparse 模块
 from tqdm import tqdm
 
 from clgm.models.clgm_core import CLGM, CLGMConfig
@@ -12,13 +14,24 @@ from clgm.data.data_collators import CausalLMCollator
 from configs.config import LLM_FINETUNE_CONFIG, PATCH_SIZE
 
 def main():
+    # 0. 添加命令行参数解析器以选择GPU
+    parser = argparse.ArgumentParser(description="Finetune CLGM for multimodal alignment.")
+    parser.add_argument("--gpu_id", type=str, default=None, help="指定要使用的GPU ID (例如 '0', '1', 或 '0,1')")
+    args = parser.parse_args()
+
+    # 在初始化任何PyTorch或Accelerator组件之前，设置CUDA_VISIBLE_DEVICES
+    # 这是控制GPU使用的标准方法
+    if args.gpu_id:
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
+        print(f"用户指定使用GPU: {args.gpu_id}")
+
     # 1. 初始化 Accelerator
-    # Accelerator 会自动检测你的硬件环境（单GPU, 多GPU, TPU等）
+    # Accelerator 会自动检测通过 CUDA_VISIBLE_DEVICES 设置的环境（单GPU, 多GPU等）
     # 并相应地配置好分布式训练所需的一切。
     accelerator = Accelerator(gradient_accumulation_steps=LLM_FINETUNE_CONFIG["gradient_accumulation_steps"])
     config = LLM_FINETUNE_CONFIG
     
-    print(f"使用设备: {accelerator.device}")
+    print(f"脚本启动，Accelerator检测到的设备为: {accelerator.device}")
     
     # 2. 加载分词器
     # 必须加载我们在第一步创建的、扩展了<ts_motif>等词元的分词器
@@ -27,11 +40,11 @@ def main():
     
     # 为数据集类添加特殊词元映射，以便它能正确地找到<ts_start>等token的ID
     # 这一步也可以在分词器保存前就设置好，但在这里设置更明确
-    tokenizer.special_tokens_map = {
-        "text_start": "<text_start>", "text_end": "<text_end>",
-        "ts_start": "<ts_start>", "ts_end": "<ts_end>",
-        "instruction": "<instruction>", "end_instruction": "</instruction>",
-    }
+    # tokenizer.special_tokens_map = {
+    #     "text_start": "<text_start>", "text_end": "<text_end>",
+    #     "ts_start": "<ts_start>", "ts_end": "<ts_end>",
+    #     "instruction": "<instruction>", "end_instruction": "</instruction>",
+    # }
 
     # 3. 初始化 CLGM 模型
     # 只在主进程上打印信息，避免多进程下的信息轰炸
@@ -102,7 +115,8 @@ def main():
     # 8. 保存最终模型
     if accelerator.is_local_main_process:
         print("训练完成，正在保存模型...")
-        save_path = os.path.join(config["clgm_checkpoint_dir"], "stage2_aligned")
+        # save_path = os.path.join(config["clgm_checkpoint_dir"], "stage2_aligned")
+        save_path = os.path.join(config["clgm_checkpoint_dir"], "stage2_aligned2")
         # accelerator.wait_for_everyone() 确保所有进程都完成了训练
         accelerator.wait_for_everyone()
         # accelerator.unwrap_model() 获取原始的、未被包装的模型

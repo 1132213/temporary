@@ -2,6 +2,7 @@
 /data
 raw_data/
 output/
+local_models/
 # 忽略存放模型权重的文件夹
 checkpoints/
 
