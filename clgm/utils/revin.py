@@ -5,9 +5,6 @@ import torch.nn as nn
 class RevIN(nn.Module):
     """
     可逆实例归一化 (Reverse Instance Normalization for Time Series)。
-    论文地址: https://openreview.net/forum?id=cGDAkQo1C0p
-    该模块对每个时间序列实例独立进行归一化，并存储其均值和标准差，
-    以便后续可以逆转归一化过程，恢复原始数据尺度。
     """
     def __init__(self, num_features: int, eps: float = 1e-5, affine: bool = True):
         """

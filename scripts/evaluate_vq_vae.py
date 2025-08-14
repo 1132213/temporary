@@ -10,7 +10,7 @@ from clgm.utils.revin import RevIN
 from clgm.utils.evaluation import calculate_ts_metrics
 from configs.config import PATCH_SIZE, VQ_VAE_TRAIN_CONFIG
 
-# --- 新增: 定义输出目录 ---
+# --- 定义输出目录 ---
 OUTPUT_DIR = "output"
 
 def generate_synthetic_timeseries(length=1024, save_path="synthetic_sample.npy"):
@@ -25,17 +25,17 @@ def generate_synthetic_timeseries(length=1024, save_path="synthetic_sample.npy")
     noise = np.random.randn(length) * 0.4
     synthetic_ts = sine_wave + linear_trend + noise
     
-    # --- 修改: 确保保存路径的目录存在 ---
+    # 确保保存路径的目录存在
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     np.save(save_path, synthetic_ts)
     print(f"合成样本已保存至: {save_path}")
     return synthetic_ts
 
-def evaluate_reconstruction(model_path, ts_data, patch_size, device):
+def evaluate_reconstruction(model_path, ts_data, patch_size, device, data_source_name="Sample"):
     """
     加载训练好的VQ-VAE模型，对给定的时间序列样本进行重构，并进行定性和定量评估。
     """
-    # 1. 加载模型 (保持不变)
+    # 1. 加载模型
     print(f"正在从 {model_path} 加载模型...")
     model = VQVAE().to(device)
     checkpoint = torch.load(model_path, map_location=device)
@@ -43,7 +43,7 @@ def evaluate_reconstruction(model_path, ts_data, patch_size, device):
     model.eval()
     print(f"模型加载成功，使用设备: {device}")
 
-    # 2. 预处理数据 (保持不变)
+    # 2. 预处理数据
     print("正在处理样本数据...")
     revin = RevIN(num_features=1, affine=False)
     
@@ -76,16 +76,16 @@ def evaluate_reconstruction(model_path, ts_data, patch_size, device):
 
     reconstructed_ts = np.concatenate(reconstructed_patches)
 
-    # 3. 定量评估 (保持不变)
+    # 3. 定量评估
     metrics = calculate_ts_metrics(original_ts, reconstructed_ts)
     print("\n--- 定量评估结果 ---")
     print(f"  均方误差 (MSE): {metrics['MSE']:.6f}")
     print(f"  平均绝对误差 (MAE): {metrics['MAE']:.6f}")
 
-    # 4. 定性评估 (修改了可视化部分)
+    # 4. 定性评估
     print("\n--- 定性评估结果 ---")
     plt.figure(figsize=(15, 6))
-    plt.title("VQ-VAE Reconstruction effect comparison (using automatically generated samples)")
+    plt.title(f"VQ-VAE Reconstruction | Source: {data_source_name}")
     plt.plot(original_ts, label='Original Time Series', color='blue', alpha=0.8, linewidth=1.5)
     plt.plot(reconstructed_ts, label='Reconstructed Time Series', color='red', linestyle='--', alpha=0.7, linewidth=1.0)
     plt.xlabel("Time Step")
@@ -93,8 +93,8 @@ def evaluate_reconstruction(model_path, ts_data, patch_size, device):
     plt.legend()
     plt.grid(True)
     
-    # --- 修改: 将图片保存到指定的输出目录 ---
-    output_fig_path = os.path.join(OUTPUT_DIR, "reconstruction_comparison.png")
+    # 将图片保存到指定的输出目录
+    output_fig_path = os.path.join(OUTPUT_DIR, f"reconstruction_{os.path.basename(data_source_name)}.png")
     plt.savefig(output_fig_path)
     print(f"对比图像已保存至: {output_fig_path}")
     # plt.show()
@@ -102,6 +102,8 @@ def evaluate_reconstruction(model_path, ts_data, patch_size, device):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="评估 VQ-VAE 模型的重构性能")
     parser.add_argument("--gpu", type=int, default=0, help="要使用的 GPU 索引 (例如, 0, 1, 2, ...)")
+    # --- 新增: 允许用户指定一个时间序列文件路径 ---
+    parser.add_argument("--ts_file_path", type=str, default=None, help="可选：指定要评估的时间序列文件路径 (.npy 格式)")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -110,18 +112,36 @@ if __name__ == "__main__":
         device = "cpu"
     print(f"--- 将要使用的设备是: {device} ---")
 
-    # --- 新增: 确保输出目录存在 ---
+    # 确保输出目录存在
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     MODEL_CHECKPOINT_PATH = os.path.join(VQ_VAE_TRAIN_CONFIG["checkpoint_dir"], 'best_model.pth')
     
-    # --- 修改: 指定 .npy 文件的保存路径 ---
-    synthetic_npy_path = os.path.join(OUTPUT_DIR, "synthetic_sample.npy")
-    synthetic_ts_data = generate_synthetic_timeseries(save_path=synthetic_npy_path)
+    ts_data_to_evaluate = None
+    data_source = ""
+
+    if args.ts_file_path:
+        print(f"--- 尝试从文件加载时间序列: {args.ts_file_path} ---")
+        if not os.path.exists(args.ts_file_path):
+            print(f"错误: 指定的文件路径不存在 -> {args.ts_file_path}")
+            exit()
+        try:
+            ts_data_to_evaluate = np.load(args.ts_file_path)
+            data_source = os.path.basename(args.ts_file_path)
+            print("文件加载成功。")
+        except Exception as e:
+            print(f"错误: 加载文件时出错 -> {e}")
+            exit()
+    else:
+        print("--- 未指定时间序列文件，将生成合成数据进行评估 ---")
+        synthetic_npy_path = os.path.join(OUTPUT_DIR, "synthetic_sample.npy")
+        ts_data_to_evaluate = generate_synthetic_timeseries(save_path=synthetic_npy_path)
+        data_source = "synthetic_sample"
     
     evaluate_reconstruction(
         model_path=MODEL_CHECKPOINT_PATH,
-        ts_data=synthetic_ts_data,
+        ts_data=ts_data_to_evaluate,
         patch_size=PATCH_SIZE,
-        device=device
+        device=device,
+        data_source_name=data_source
     )

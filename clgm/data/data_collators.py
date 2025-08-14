@@ -11,9 +11,6 @@ class CausalLMCollator:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
 
-    # --- 修正部分 ---
-    # 原始实现只处理了张量列表的情况，但第三阶段的数据集返回的是字典列表。
-    # 这里我们重构__call__方法，使其能够智能地处理两种不同的数据格式。
     def __call__(self, batch: List[Any]) -> Dict[str, torch.Tensor]:
         """
         这个函数会被 DataLoader 在每个批次上调用。

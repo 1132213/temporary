@@ -34,13 +34,3 @@ def calculate_ts_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         "MSE": mse,
         "MAE": mae
     }
-
-# 对于文本评估，可以使用标准的NLP库，例如Hugging Face的`evaluate`库，
-# 来计算ROUGE, BLEU等指标（如果提供了参考文本）。
-# 这是一个使用示例，展示了如何操作：
-# from evaluate import load
-# rouge = load('rouge')
-# predictions = ["hello there", "general kenobi"]
-# references = ["hello there", "general kenobi"]
-# results = rouge.compute(predictions=predictions, references=references)
-# print(results)

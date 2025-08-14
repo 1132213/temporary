@@ -24,12 +24,8 @@ class VQVAE(nn.Module):
         # 实例化编码器
         self.encoder = Encoder(in_channels, num_hiddens, num_residual_layers, compression_factor)
 
-        # --- 修正部分 ---
-        # 增加一个 pre-quantization 卷积层。
-        # 这一层的作用是确保编码器输出的特征维度（num_hiddens）能够匹配
-        # 码本中嵌入向量的维度（embedding_dim）。这是一个关键步骤。
+
         self.pre_vq_conv = nn.Conv1d(num_hiddens, embedding_dim, kernel_size=1, stride=1)
-        # --- 修正结束 ---
 
         # 实例化矢量量化器
         self.vq = VectorQuantizer(num_embeddings, embedding_dim, commitment_cost)

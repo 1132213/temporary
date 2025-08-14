@@ -23,3 +23,8 @@ __pycache__/
 
 # 忽略macOS系统文件
 .DS_Store
+
+# 忽略文件名含check、clean、generate的py文件
+*check*.py
+*clean*.py
+*generate*.py

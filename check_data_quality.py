@@ -63,7 +63,6 @@ def check_samples():
             plt.xlabel("Time Step")
             plt.ylabel("Value")
             
-            # --- 关键修改：保存图表到文件，而不是显示它 ---
             plt.savefig(output_image_path)
             plt.close() # 关闭图表以释放内存，在循环中很重要
             

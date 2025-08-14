@@ -14,9 +14,7 @@ class ResidualStack(nn.Module):
         self._num_residual_layers = num_residual_layers
         self._layers = nn.ModuleList()
 
-        # --- 修正部分 ---
-        # 原始代码中这个循环是缺失的，导致残差堆栈是空的。
-        # 这里我们添加循环来真正地构建残差块。
+
         for _ in range(num_residual_layers):
             # 每个残差块是一个简单的序列：ReLU -> Conv1d -> ReLU
             conv_block = nn.Sequential(
@@ -30,7 +28,6 @@ class ResidualStack(nn.Module):
                           kernel_size=1, stride=1, bias=False)
             )
             self._layers.append(conv_block)
-        # --- 修正结束 ---
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 对每一个残差块，将输入x与块的输出相加，实现残差连接

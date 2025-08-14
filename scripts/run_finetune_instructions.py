@@ -1,72 +1,80 @@
 # scripts/run_finetune_instructions.py
-# 这个脚本与 run_finetune_alignment.py 非常相似，
-# 主要区别在于加载的模型检查点和使用的数据集不同。
-
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
-from torch.optim import AdamW # Import AdamW from torch.optim
+from torch.optim import AdamW 
 from accelerate import Accelerator
 import os
 from tqdm import tqdm
 
-# 导入正确的、用于指令微调的数据集
 from clgm.data.datasets import InstructionTuningDataset
 from clgm.data.data_collators import CausalLMCollator
 from clgm.models.clgm_core import CLGM, CLGMConfig
 from configs.config import LLM_FINETUNE_CONFIG, PATCH_SIZE
+from safetensors.torch import load_file 
 
 def main():
-    # 1. 初始化 Accelerator，同样支持梯度累积
     accelerator = Accelerator(gradient_accumulation_steps=LLM_FINETUNE_CONFIG["gradient_accumulation_steps"])
     config = LLM_FINETUNE_CONFIG
     
-    # 2. 加载分词器和模型
-    # --- 关键不同点 1: 加载第二阶段训练好的模型 ---
-    # 我们从第二阶段对齐后的模型检查点继续训练
     stage2_checkpoint_path = os.path.join(config["clgm_checkpoint_dir"], "stage2_aligned")
     
     if accelerator.is_local_main_process:
         print(f"从阶段二检查点加载模型和分词器: {stage2_checkpoint_path}")
-        
+    
     tokenizer = AutoTokenizer.from_pretrained(stage2_checkpoint_path)
-    # 再次设置special_tokens_map以确保数据集能正确工作
-    tokenizer.special_tokens_map = {
-        "text_start": "<text_start>", "text_end": "<text_end>",
-        "ts_start": "<ts_start>", "ts_end": "<ts_end>",
-        "instruction": "<instruction>", "end_instruction": "</instruction>",
-    }
     
-    # 使用 .from_pretrained 直接从文件夹加载整个CLGM模型
-    model = CLGM.from_pretrained(stage2_checkpoint_path)
-    # VQ-VAE 已经在 CLGM 类内部被正确处理（加载并冻结），无需再次手动加载
+    clgm_config = CLGMConfig.from_pretrained(stage2_checkpoint_path)
+    model = CLGM(clgm_config)
     
-    # 3. 准备数据
-    # --- 关键不同点 2: 使用指令微调数据集 ---
+    if accelerator.is_local_main_process:
+        print(f"将模型词嵌入层大小调整为: {len(tokenizer)}")
+
+    model.llm.resize_token_embeddings(len(tokenizer))
+    state_dict_path = os.path.join(stage2_checkpoint_path, 'model.safetensors') 
+    if not os.path.exists(state_dict_path):
+        state_dict_path = os.path.join(stage2_checkpoint_path, 'pytorch_model.bin')
+
+    if accelerator.is_local_main_process:
+        print(f"正在从 {state_dict_path} 加载权重...")
+
+    if state_dict_path.endswith(".safetensors"):
+        state_dict = load_file(state_dict_path, device="cpu")
+    else:
+        state_dict = torch.load(state_dict_path, map_location="cpu")
+
+    model.load_state_dict(state_dict, strict=False)
+    
+    if accelerator.is_local_main_process:
+        print("模型和权重加载成功！")
+    
     if accelerator.is_local_main_process:
         print("正在加载指令微调数据集...")
     dataset = InstructionTuningDataset(
         data_path=config["instruction_data_path"],
-        vq_vae=model.get_vq_vae(), # VQ-VAE仍然需要用于处理输入的时间序列
+        vq_vae=model.get_vq_vae(), 
         tokenizer=tokenizer,
         patch_size=PATCH_SIZE
     )
-    collator = CausalLMCollator(tokenizer) # 整理器可以复用
+    collator = CausalLMCollator(tokenizer)
     dataloader = DataLoader(dataset, batch_size=config["batch_size"], collate_fn=collator, shuffle=True)
     
-    # 4. 优化器和调度器
-    optimizer = AdamW(model.parameters(), lr=config["learning_rate"])
+    optimizer = AdamW(
+        model.parameters(),
+        lr=config["learning_rate"],
+        weight_decay=config.get("weight_decay", 0.0)
+        )
     num_training_steps = (len(dataloader) // accelerator.gradient_accumulation_steps) * config["num_epochs_instruction"]
     lr_scheduler = get_linear_schedule_with_warmup(
-        optimizer, num_warmup_steps=0, num_training_steps=num_training_steps
+        optimizer,
+        num_warmup_steps=config.get("num_warmup_steps", 0),
+        num_training_steps=num_training_steps
     )
     
-    # 5. 使用 Accelerator 准备
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, dataloader, lr_scheduler
     )
 
-    # 6. 训练循环
     if accelerator.is_local_main_process:
         print("开始阶段三：指令微调...")
         
@@ -75,7 +83,6 @@ def main():
         progress_bar = tqdm(dataloader, desc=f"Stage 3 - Epoch {epoch+1}", disable=not accelerator.is_local_main_process)
         
         for batch in progress_bar:
-            # 梯度累积上下文
             with accelerator.accumulate(model):
                 # 前向传播。因为数据集的标签已经处理好（输入部分为-100），
                 # 这里的损失将只在“输出”部分计算。
@@ -89,13 +96,11 @@ def main():
             if accelerator.is_local_main_process:
                 progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
     
-    # 7. 保存最终模型
     if accelerator.is_local_main_process:
         print("指令微调完成，正在保存最终模型...")
         save_path = os.path.join(config["clgm_checkpoint_dir"], "stage3_final")
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
-        # 保存最终的模型和分词器，准备用于推理
         unwrapped_model.save_pretrained(save_path)
         tokenizer.save_pretrained(save_path)
         print(f"阶段三最终模型已保存至: {save_path}")

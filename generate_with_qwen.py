@@ -1,163 +1,147 @@
-# generate_with_qwen.py (最终修复版)
+# generate_with_qwen.py
 import numpy as np
 import json
 import os
 import random
 from tqdm import tqdm
-import argparse # 1. 导入argparse
+import argparse
+import re
+import multiprocessing
+import time
 
-# --- 2. 关键！在导入torch或vllm之前，根据命令行参数设置可见的GPU ---
-parser = argparse.ArgumentParser(description="Generate high-quality dataset using Qwen-14B and vLLM.")
-parser.add_argument(
-    "--gpu-id",
-    type=int,
-    default=0,
-    help="The ID of the GPU to use for inference."
-)
-args = parser.parse_args()
+PROMPT_TEMPLATES = [
+    ("Your task is to rewrite the following bullet points into a single, cohesive paragraph. You MUST incorporate every fact listed.", "Synthesized Paragraph:"),
+    ("Weave together all of the following factual points about a time series into a fluent, descriptive paragraph. Do not omit any details.", "Comprehensive Description:"),
+    ("Combine the following distinct observations about a time series into one paragraph. Ensure every point is mentioned.", "Combined Summary:"),
+    ("You are a summarization AI. Your input is a list of technical facts. Your output must be a natural language paragraph that includes all of the information from the input list.", "Full Summary:"),
+    ("Convert the following checklist of time series features into a well-written paragraph. Make sure every item on the checklist is covered in your response.", "Narrative Version:")
+]
 
-print(f"--- 将要使用的GPU ID是: {args.gpu_id} ---")
-os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
-
-# 现在再导入vLLM
-from vllm import LLM, SamplingParams
-
-# --- 配置区 ---
-
-# 1. 模型与数据配置
-LOCAL_LLM_PATH = "/root/emhua/btwu/Qwen14B"
-NUM_SAMPLES_TO_GENERATE = 20000
-BATCH_SIZE = 128 
-
-# 2. 输出目录配置
-OUTPUT_DIR = "data/qwen_generated_dataset_en/"
-NPY_SUBDIR = "npy_files"
-JSONL_FILENAME = "alignment_data_en.jsonl"
-
-NPY_OUTPUT_PATH = os.path.join(OUTPUT_DIR, NPY_SUBDIR)
-os.makedirs(NPY_OUTPUT_PATH, exist_ok=True)
-OUTPUT_JSONL_PATH = os.path.join(OUTPUT_DIR, JSONL_FILENAME)
-
-
-# ... (generate_complex_timeseries 和 generate_descriptions_in_batch 函数保持不变) ...
-def generate_complex_timeseries(length=256):
-    """
-    Generates a complex time series and a dictionary of its ground-truth features in English.
-    """
+def generate_complex_timeseries(length):
     time = np.arange(length)
     timeseries = np.zeros(length)
     ground_truth_features = {}
-
-    # Trend Component
-    trend_type = random.choice(['steady increase', 'gentle decrease', 'v-shape', 'a-shape', 'flat'])
-    if trend_type == 'steady increase':
-        slope = random.uniform(0.005, 0.02)
-        timeseries += time * slope
-        ground_truth_features['trend'] = f"a steady linear increasing trend with a slope of {slope:.3f}"
-    elif trend_type == 'gentle decrease':
-        slope = random.uniform(-0.02, -0.005)
-        timeseries += time * slope
-        ground_truth_features['trend'] = f"a gentle linear decreasing trend"
-    
-    # Seasonality Component
-    num_seasonalities = random.randint(1, 2)
-    seasons = []
-    for _ in range(num_seasonalities):
-        period = random.choice([24, 48, 168]) # e.g., daily, bi-daily, weekly
-        amplitude = random.uniform(0.8, 4)
+    if random.random() > 0.1:
+        trend_type = random.choice(['steady increase', 'gentle decrease', 'v-shape', 'flat'])
+        if trend_type == 'steady increase':
+            slope = random.uniform(0.005, 0.02)
+            timeseries += time * slope
+            ground_truth_features['trend'] = "it exhibits a steady linear increasing trend"
+        elif trend_type == 'gentle decrease':
+            slope = random.uniform(-0.02, -0.005)
+            timeseries += time * slope
+            ground_truth_features['trend'] = "it exhibits a gentle linear decreasing trend"
+        else:
+             ground_truth_features['trend'] = "it is relatively flat with no significant trend"
+    if random.random() > 0.1:
+        period = random.choice([24, 48, 96])
+        amplitude = random.uniform(1.0, 6.0)
         timeseries += np.sin(2 * np.pi * time / period) * amplitude
-        seasons.append(f"a regular fluctuation with a period of {period} and an amplitude of {amplitude:.2f}")
-    if seasons:
-        ground_truth_features['seasonality'] = " and ".join(seasons)
-
-    # Noise Component
+        ground_truth_features['seasonality'] = f"it has a clear seasonal pattern with a period of {period}"
+    if random.random() > 0.5:
+        pos = random.randint(int(length * 0.1), int(length * 0.9))
+        magnitude = random.uniform(8, 20) * random.choice([-1, 1])
+        timeseries[pos] += magnitude
+        anomaly_type = "an upward spike" if magnitude > 0 else "a downward dip"
+        ground_truth_features['anomaly'] = f"there is a significant {anomaly_type} around timestep {pos}"
     noise_level = random.uniform(0.1, 0.6)
     timeseries += np.random.randn(length) * noise_level
-    ground_truth_features['noise'] = f"a baseline noise with a standard deviation of approximately {noise_level:.2f}"
-
-    # Anomaly Component
-    num_anomalies = random.randint(0, 3)
-    anomalies = []
-    for _ in range(num_anomalies):
-        pos = random.randint(int(length * 0.1), int(length * 0.9))
-        if random.random() > 0.5:
-            magnitude = random.uniform(8, 20)
-            timeseries[pos] += magnitude
-            anomalies.append(f"a significant upward spike around timestep {pos}")
-        else:
-            magnitude = random.uniform(-20, -8)
-            timeseries[pos] += magnitude
-            anomalies.append(f"a sudden downward dip around timestep {pos}")
-    if anomalies:
-        ground_truth_features['anomalies'] = ", and also ".join(anomalies)
-
+    ground_truth_features['noise'] = f"it is subject to a baseline level of random noise"
+    if not ground_truth_features:
+        ground_truth_features['overall'] = "it is a simple, noisy signal"
     return timeseries, ground_truth_features
 
-
-def generate_descriptions_in_batch(llm_engine, prompts, batch_size):
-    """
-    Uses the vLLM engine to generate descriptions for a list of prompts in batches.
-    """
-    all_outputs = []
-    sampling_params = SamplingParams(temperature=0.7, top_p=0.9, max_tokens=256)
-
-    for i in tqdm(range(0, len(prompts), batch_size), desc="LLM Batch-Inferencing"):
-        batch = prompts[i:i + batch_size]
-        request_outputs = llm_engine.generate(batch, sampling_params)
-        for output in request_outputs:
-            all_outputs.append(output.outputs[0].text.strip())
-            
-    return all_outputs
-
-
-if __name__ == "__main__":
-    # --- Part 1: 生成所有的时间序列和Prompts ---
-    print(f"--- Part 1: Generating {NUM_SAMPLES_TO_GENERATE} timeseries and prompts ---")
+def run_generation_on_gpu(gpu_id, num_gpus, gpu_rank, total_samples, batch_size, output_dir, local_llm_path, min_len, max_len):
+    print(f"--- [Process for GPU {gpu_id}] Rank {gpu_rank}/{num_gpus} starting. ---")
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    from vllm import LLM, SamplingParams
+    
+    samples_per_gpu = total_samples // num_gpus
+    start_index = gpu_rank * samples_per_gpu
+    end_index = start_index + samples_per_gpu
+    if gpu_rank == num_gpus - 1:
+        end_index = total_samples
+    num_samples_for_this_process = end_index - start_index
+    print(f"--- [Process for GPU {gpu_id}] Will generate {num_samples_for_this_process} samples (from index {start_index} to {end_index-1}). ---")
+    print(f"--- [Process for GPU {gpu_id}] Time series length will be random between {min_len} and {max_len}. ---")
+    npy_output_path = os.path.join(output_dir, "npy_files")
+    jsonl_filename = f"alignment_data_en_gpu{gpu_rank}.jsonl"
+    output_jsonl_path = os.path.join(output_dir, jsonl_filename)
     all_timeseries_data = []
     all_prompts = []
-    for _ in tqdm(range(NUM_SAMPLES_TO_GENERATE), desc="Generating timeseries"):
-        ts_data, ts_features = generate_complex_timeseries()
+    for _ in tqdm(range(num_samples_for_this_process), desc=f"Generating Prompts for GPU {gpu_id}"):
+        current_length = random.randint(min_len, max_len)
+        ts_data, ts_features = generate_complex_timeseries(length=current_length)
         all_timeseries_data.append(ts_data)
-        
-        fact_list = [f"- Trend: {ts_features.get('trend', 'none')}."]
-        if 'seasonality' in ts_features: fact_list.append(f"- Seasonality: {ts_features['seasonality']}.")
-        if 'anomalies' in ts_features: fact_list.append(f"- Anomalies: {ts_features['anomalies']}.")
-        fact_list.append(f"- Noise: {ts_features.get('noise', 'none')}.")
+        fact_list = [f"- {desc}." for desc in ts_features.values()]
         facts_as_string = "\n".join(fact_list)
-
-        prompt = f"""You are a professional data scientist writing a report. Your task is to summarize the key characteristics of a time series based on the following technical facts. Write a concise, fluent, and professional paragraph in English.
-
-**Technical Facts:**
-{facts_as_string}
-
-**Analyst's Summary:**
-"""
+        instruction, response_prefix = random.choice(PROMPT_TEMPLATES)
+        prompt = f"""{instruction}\n\n**Facts to incorporate:**\n{facts_as_string}\n\n**{response_prefix}**"""
         all_prompts.append(prompt)
-
-    # --- Part 2: 初始化vLLM并批量生成文本描述 ---
-    print(f"\n--- Part 2: Initializing Qwen-14B with vLLM (this may take a moment) ---")
-    llm = LLM(
-        model=LOCAL_LLM_PATH,
-        tensor_parallel_size=1,
-        trust_remote_code=True,
-        gpu_memory_utilization=0.85  # 3. 降低显存占用率
-    )
-    
-    print(f"\n--- Part 3: Generating text descriptions in batches ---")
-    generated_texts = generate_descriptions_in_batch(llm, all_prompts, BATCH_SIZE)
-
-    # --- Part 4: 保存最终结果 ---
-    print(f"\n--- Part 4: Saving final dataset to {OUTPUT_JSONL_PATH} ---")
-    with open(OUTPUT_JSONL_PATH, 'w', encoding='utf-8') as f:
-        for i, ts_data in enumerate(tqdm(all_timeseries_data, desc="Saving results")):
-            npy_filename = f"series_en_{i}.npy"
-            npy_filepath = os.path.join(NPY_OUTPUT_PATH, npy_filename)
+    llm = LLM(model=local_llm_path, tensor_parallel_size=1, trust_remote_code=True, gpu_memory_utilization=0.85)
+    all_outputs = []
+    sampling_params = SamplingParams(temperature=0.5, top_p=0.9, max_tokens=256)
+    for i in tqdm(range(0, len(all_prompts), batch_size), desc=f"LLM Inference on GPU {gpu_id}"):
+        batch = all_prompts[i:i + batch_size]
+        request_outputs = llm.generate(batch, sampling_params)
+        for output in request_outputs:
+            all_outputs.append(output.outputs[0].text.strip())
+    prefixes_to_clean = [prefix for _, prefix in PROMPT_TEMPLATES]
+    with open(output_jsonl_path, 'w', encoding='utf-8') as f:
+        for i, ts_data in enumerate(tqdm(all_timeseries_data, desc=f"Cleaning & Saving for GPU {gpu_id}")):
+            global_index = start_index + i
+            npy_filename = f"series_en_{global_index}.npy"
+            npy_filepath = os.path.join(npy_output_path, npy_filename)
             np.save(npy_filepath, ts_data.astype(np.float32))
-            
-            output_data = {
-                "text": generated_texts[i],
-                "ts_path": npy_filepath
-            }
+            text = all_outputs[i].split('\n')[0]
+            for prefix in prefixes_to_clean:
+                clean_prefix = prefix.replace(":", "").strip()
+                text = re.sub(r'(\*\*|)?' + re.escape(clean_prefix) + r'(\*\*|)?:\s*', '', text, count=1, flags=re.IGNORECASE)
+            clean_text = re.sub(r'[^\w\.\?!]+$', '', text).strip()
+            output_data = {"text": clean_text, "ts_path": npy_filepath}
             f.write(json.dumps(output_data, ensure_ascii=False) + '\n')
+    print(f"--- [Process for GPU {gpu_id}] Task complete. Results saved to {output_jsonl_path} ---")
 
-    print(f"\n--- High-quality English dataset generation complete! ---")
+if __name__ == "__main__":
+    multiprocessing.set_start_method('spawn', force=True)
+    parser = argparse.ArgumentParser(description="Run parallel data generation across multiple GPUs.")
+    parser.add_argument('--gpus', type=str, default="0,1", help='A comma-separated list of GPU IDs to use (e.g., "0,1,2,3").')
+    main_args = parser.parse_args()
+    GPUS_TO_USE = [int(x) for x in main_args.gpus.split(',')]
+    NUM_GPUS = len(GPUS_TO_USE)
+    TOTAL_SAMPLES_TO_GENERATE = 20000
+    BATCH_SIZE = 128
+    OUTPUT_DIR = "data/qwen_generated_dataset_en_merge/"
+    LOCAL_LLM_PATH = "/root/emhua/btwu/Qwen14B"
+    MIN_LENGTH = 128
+    MAX_LENGTH = 512
+    if os.path.exists(OUTPUT_DIR):
+        print(f"--- Cleaning up previous output directory: {OUTPUT_DIR} ---")
+        for root, dirs, files in os.walk(OUTPUT_DIR, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+        os.rmdir(OUTPUT_DIR)
+    os.makedirs(os.path.join(OUTPUT_DIR, "npy_files"), exist_ok=True)
+    print(f"--- Starting data generation on {NUM_GPUS} GPUs: {GPUS_TO_USE} ---")
+    processes = []
+    for rank, gpu_id in enumerate(GPUS_TO_USE):
+        process_args = (gpu_id, NUM_GPUS, rank, TOTAL_SAMPLES_TO_GENERATE, BATCH_SIZE, OUTPUT_DIR, LOCAL_LLM_PATH, MIN_LENGTH, MAX_LENGTH)
+        p = multiprocessing.Process(target=run_generation_on_gpu, args=process_args)
+        processes.append(p)
+        p.start()
+        time.sleep(5)
+    for p in processes:
+        p.join()
+    print("\n--- All parallel generation processes have completed. ---")
+    print("--- Merging final dataset... ---")
+    merged_filepath = os.path.join(OUTPUT_DIR, "alignment_data_en_merged.jsonl")
+    with open(merged_filepath, 'wb') as wfd:
+        for rank in range(NUM_GPUS):
+            chunk_filepath = os.path.join(OUTPUT_DIR, f"alignment_data_en_gpu{rank}.jsonl")
+            if os.path.exists(chunk_filepath):
+                with open(chunk_filepath, 'rb') as rfd:
+                    wfd.write(rfd.read())
+                os.remove(chunk_filepath)
+    print(f"--- Success! All data merged into: {merged_filepath} ---")

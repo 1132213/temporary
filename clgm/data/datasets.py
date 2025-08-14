@@ -10,13 +10,11 @@ from clgm.models.vq_vae import VQVAE
 from clgm.utils.revin import RevIN
 from transformers import AutoTokenizer
 
-# 从中央配置导入特殊词元定义
 from configs.config import SPECIAL_TOKENS
 
 class UnsupervisedTimeSeriesDataset(Dataset):
     """
     用于 VQ-VAE 无监督训练的数据集。
-    (这个类保持不变)
     """
     def __init__(self, data_dir: str, patch_size: int):
         self.patch_size = patch_size
@@ -54,7 +52,6 @@ class UnsupervisedTimeSeriesDataset(Dataset):
 class PairedTSTextDataset(Dataset):
     """
     用于阶段二：多模态对齐微调的数据集。
-    (已修改，支持双向数据和EOS token)
     """
     def __init__(self, data_path: str, vq_vae: VQVAE, tokenizer: AutoTokenizer, patch_size: int):
         self.data = []
@@ -124,7 +121,6 @@ class PairedTSTextDataset(Dataset):
 class InstructionTuningDataset(PairedTSTextDataset):
     """
     用于阶段三：指令微调的数据集。
-    (已修改，支持EOS token)
     """
     def __init__(self, data_path: str, vq_vae: VQVAE, tokenizer: AutoTokenizer, patch_size: int):
         # 调用父类的构造函数，但这里我们重写它，因为长度计算不同
@@ -147,7 +143,6 @@ class InstructionTuningDataset(PairedTSTextDataset):
         self.ts_start_id = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS['ts_start'])
         self.ts_end_id = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS['ts_end'])
 
-    # --- InstructionTuningDataset 的长度就是文件行数 ---
     def __len__(self) -> int:
         return len(self.data)
         
@@ -187,17 +182,26 @@ class InstructionTuningDataset(PairedTSTextDataset):
         
         if 'output_ts_path' in item and item['output_ts_path']: # 支持从路径加载输出TS
             ts_data = np.load(item['output_ts_path']).astype(np.float32)
-            # ... (与处理输入TS类似的代码) ...
-            ts_token_ids = [self.tokenizer.convert_tokens_to_ids(f"<ts_motif_{i}>") for i in ts_indices]
-            output_tokens.extend([self.ts_start_id] + ts_token_ids + [self.ts_end_id])
+            if len(ts_data.shape) > 1: ts_data = ts_data.flatten()
+            num_patches = len(ts_data) // self.patch_size
+            if num_patches > 0:
+                ts_data = ts_data[:num_patches * self.patch_size]
+                ts_tensor = torch.from_numpy(ts_data).unsqueeze(0).unsqueeze(-1)
+                ts_tensor_norm = self.revin(ts_tensor, mode='norm')
+                ts_tensor_norm = ts_tensor_norm.permute(0, 2, 1)
+
+                with torch.no_grad():
+                    device = next(self.vq_vae.parameters()).device
+                    ts_indices = self.vq_vae.encode(ts_tensor_norm.to(device)).squeeze(0)
+                
+                ts_token_ids = [self.tokenizer.convert_tokens_to_ids(f"<ts_motif_{i}>") for i in ts_indices]
+                output_tokens.extend([self.ts_start_id] + ts_token_ids + [self.ts_end_id])
 
         # --- 为因果语言模型组合最终序列 ---
         instruction_part = [self.instruction_start_id] + instruction_tokens + [self.instruction_end_id]
-        
-        # --- 关键修改: 在末尾追加EOS token ---
+        #+eos_token
         full_sequence = instruction_part + input_tokens + output_tokens + [self.tokenizer.eos_token_id]
         
-        # --- 创建标签，同样需要追加EOS token ---
         ignore_part_len = len(instruction_part) + len(input_tokens)
         labels = [-100] * ignore_part_len + output_tokens + [self.tokenizer.eos_token_id]
         
